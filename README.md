@@ -30,6 +30,28 @@
 日闸（`event_service` 写核销前、`redeem_service` 钉扎前）、总览与遗留收口全部经由
 `backend/app/services/tag_service.py`，同一来源。
 
+## 单真相管道（tag 子集撕裂事故的收口）
+
+历史上存在过一条分叉管道：独立的 `tag_index` / `leftover_material` 物化表和
+`gate_force_closed:*` 设置位。它与 `redeem_facts` 的 open 扫描各写各的，造成清单
+多码/漏码、改 tag 后清单仍旧、闸已关却显示可钉、刷新中误关闸等撕裂。该管道已整体
+删除，启动时 `db.init_db()` 会清理旧库中残留的表与设置位。
+
+现在全系统只有一个真相来源——**现行事件 tag + `redeem_facts` 的 open 扫描**：
+
+- 事件改 tag（`POST /events/{id}/tag`）在同一事务内同步其 open 核销事实的 tag 分区；
+  已 sealed/voided 的事实属于关闸日，改 tag 返回 409；
+- leftover 清单（券码/金额/tag）是 open 扫描的纯派生读模型，恒等于「非本批 tag 的
+  剩余 open」，不存在独立物化表，因此不可能与扫描不一致；
+- 日闸态只由当日 sealed 批推导；可钉性 `can_nail = 闸未关 且 存在 open`，钉扎页、
+  总览、写路径共用同一公式，杜绝「显示可钉却写入 409」及其反向矛盾；
+- 钉扎在一个 `BEGIN IMMEDIATE` 事务内完成 open 扫描 → 遗留 carry/void 收口 → 建批 →
+  事实置 sealed，提交前再次扫描确认无 open 残留，否则拒绝关闸；
+- 不再有独立的「刷新 leftover」接口（旧 `POST /tags/refresh` 已移除）：读模型每次
+  请求即按当前扫描重算，钉与刷新交错时只会看到「未关且可钉」或「已关且不可钉」两种
+  一致状态。
+
+
 验证：
 
 ```

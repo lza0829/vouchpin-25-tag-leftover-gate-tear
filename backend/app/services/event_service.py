@@ -85,15 +85,6 @@ def add_event(body: dict[str, Any]) -> dict[str, Any]:
                 )
             except Exception as e:
                 raise HTTPException(409, f"核销事实写入失败（可能券码已核销）: {e}") from e
-        if et == "redeem":
-            from app.services import tag_material
-            tag_material.capture(
-                conn,
-                coupon_code=code,
-                tag=tag,
-                amount=amount,
-                business_day=day,
-            )
         conn.commit()
         return {"event_id": eid, "fact_id": fact_id, "business_day": day, "tag": tag}
     finally:
@@ -101,24 +92,48 @@ def add_event(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def retag(event_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Change an event's tag and keep every downstream partition aligned.
+
+    The event tag, its open redeem fact's tag, the sealing batch's leftover
+    snapshot, and every read model (leftover list, gate, dashboard) must move
+    together in one transaction -- that is the fix for "event tag changed but
+    leftover/facts still partition by the old tag".
+    """
     tag = tag_service.normalize_tag(body.get("tag")) or ""
     conn = connect(immediate=True)
     try:
-        from app.services import tag_material
-        result = tag_material.retag_event_only(conn, event_id, tag)
-        conn.commit()
-        return result
-    finally:
-        conn.close()
+        event = conn.execute(
+            "SELECT * FROM coupon_events WHERE id=?", (int(event_id),)
+        ).fetchone()
+        if event is None:
+            raise HTTPException(404, f"事件 #{event_id} 不存在")
 
+        fact = fact_repo.get_by_event(conn, int(event_id))
+        if fact is not None and fact["status"] != "open":
+            # A sealed/voided fact belongs to a closed day; re-partitioning it
+            # would split the batch snapshot from the facts.
+            raise HTTPException(
+                409,
+                f"事件 #{event_id} 的核销事实已 {fact['status']}，关闸后禁止改 tag",
+            )
 
-def refresh_leftover(body: dict[str, Any]) -> dict[str, Any]:
-    conn = connect(immediate=True)
-    try:
-        day = body.get("business_day") or settings_repo.get(conn, "business_day")
-        from app.services import tag_material
-        result = tag_material.refresh(conn, day, body.get("tag"))
+        event_repo.update_tag(conn, int(event_id), tag)
+        moved_fact_id = None
+        if fact is not None:
+            fact_repo.update_tag(conn, int(fact["id"]), tag)
+            moved_fact_id = int(fact["id"])
+            # No materialized table to refresh: the leftover list, gate view
+            # and dashboard are read models of the open-fact scan, so the new
+            # tag partition is visible on the very next read -- in the same
+            # transaction the fact was moved in.
+
         conn.commit()
-        return result
+        return {
+            "event_id": int(event_id),
+            "tag": tag,
+            "coupon_code": event["coupon_code"],
+            "fact_id": moved_fact_id,
+            "fact_retagged": moved_fact_id is not None,
+        }
     finally:
         conn.close()

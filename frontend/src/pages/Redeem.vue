@@ -79,7 +79,7 @@ onMounted(load)
       </div>
     </div>
     <div class="row">
-      <button type="button" @click="seal" :disabled="preview.gate.sealed || preview.open_count===0">钉扎本批并关日闸</button>
+      <button type="button" @click="seal" :disabled="!preview.can_nail">钉扎本批并关日闸</button>
       <button type="button" class="ghost" @click="load">刷新预览</button>
     </div>
     <p class="msg" v-if="msg">{{ msg }}</p>

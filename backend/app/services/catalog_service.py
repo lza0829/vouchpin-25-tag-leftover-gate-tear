@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import Any
 from app.db import connect
 from app.repositories import settings as settings_repo
 from app.repositories import facts as fact_repo
@@ -21,6 +20,7 @@ def dashboard() -> dict[str, Any]:
         events = event_repo.list_events(conn, day)
         batches = batch_repo.list_batches(conn)
         gate = tag_service.day_gate(conn, day)
+        open_rows = fact_repo.open_facts_for_day(conn, day)
         return {
             "business_day": day,
             "event_count": len(events),
@@ -35,7 +35,11 @@ def dashboard() -> dict[str, Any]:
             "gate_batch_id": gate["batch_id"],
             "leftover_tags": gate["leftover_tags"],
             "tag_overview": tag_service.merged_tag_overview(conn, day),
-            "leftover_posted": __import__('app.services.tag_material', fromlist=['as_preview']).as_preview(conn, day),
+            # Read model of the same open scan; can_nail follows the single
+            # gate+scan formula so the dashboard can never contradict the
+            # nail page or the write path.
+            "open_rows": open_rows,
+            "can_nail": tag_service.can_nail(conn, day),
         }
     finally:
         conn.close()

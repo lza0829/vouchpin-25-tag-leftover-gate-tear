@@ -67,9 +67,28 @@ INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_events_day_tag ON coupon_events(business_day, tag)",
     "CREATE INDEX IF NOT EXISTS idx_facts_day_tag_status ON redeem_facts(business_day, tag, status)",
     "CREATE INDEX IF NOT EXISTS idx_facts_status ON redeem_facts(status)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_event_id ON redeem_facts(event_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_one_sealed_per_day "
     "ON redeem_batches(business_day) WHERE status = 'sealed'",
 )
+
+# The old tag_material pipeline kept a second copy of tags (tag_index), a
+# leftover materialization (leftover_material) and an independent gate flag
+# (settings: gate_force_closed:*).  They forked away from the open-fact scan
+# and caused every tear listed in the incident report.  The single source of
+# truth is now the redeem_facts scan, so drop them on startup and never read
+# them again.
+_DEPRECATED_TABLES = ("tag_index", "leftover_material")
+_DEPRECATED_SETTING_PREFIX = "gate_force_closed:"
+
+
+def _purge_deprecated_pipeline(conn: sqlite3.Connection) -> None:
+    for table in _DEPRECATED_TABLES:
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    conn.execute(
+        "DELETE FROM settings WHERE key LIKE ?",
+        (_DEPRECATED_SETTING_PREFIX + "%",),
+    )
 
 
 def connect(immediate: bool = False) -> sqlite3.Connection:
@@ -92,6 +111,7 @@ def init_db() -> None:
     try:
         conn.executescript(SCHEMA)
         _ensure_columns(conn)
+        _purge_deprecated_pipeline(conn)
         for statement in INDEX_STATEMENTS:
             try:
                 conn.execute(statement)

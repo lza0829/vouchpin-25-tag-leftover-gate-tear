@@ -37,5 +37,4 @@ export const api = {
   getDay: () => req('/settings/day'),
   setDay: (business_day) => req('/settings/day', { method: 'PUT', body: JSON.stringify({ business_day }) }),
   retag: (id, tag) => req(`/events/${id}/tag`, { method: 'POST', body: JSON.stringify({ tag }) }),
-  refreshTags: (body) => req('/tags/refresh', { method: 'POST', body: JSON.stringify(body || {}) }),
 }

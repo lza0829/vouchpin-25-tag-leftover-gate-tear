@@ -66,9 +66,6 @@ def day_gate(conn, business_day: str) -> dict[str, Any]:
 
 
 def assert_day_open(conn, business_day: str, what: str) -> None:
-    from app.services import tag_material
-    if tag_material.force_closed(conn, business_day):
-        raise HTTPException(409, f"业务日 {business_day} 写闸已关，禁止{what}")
     gate = day_gate(conn, business_day)
     if gate["sealed"]:
         detail = f"业务日 {business_day} 已由 sealed 批 #{gate['batch_id']}"
@@ -99,6 +96,34 @@ def leftover_open_facts(conn, business_day: str, tag: str | None) -> list[dict[s
     return fact_repo.leftover_facts(conn, business_day, tag)
 
 
+def leftover_view(conn, business_day: str, tag: str | None) -> dict[str, Any]:
+    """The leftover list as a pure read model of the open-fact scan.
+
+    Invariant: the rows returned here are *exactly* the open facts of the day
+    whose tag differs from the batch tag being nailed.  No materialized table
+    sits between the scan and this view, so it can never disagree with
+    ``open_facts_for_day`` or with the day gate.
+    """
+    rows = leftover_open_facts(conn, business_day, tag)
+    tags = sorted({str(f["tag"]) for f in rows})
+    return {
+        "leftover_tags": tags,
+        "leftover_count": len(rows),
+        "leftover_total": round(sum(float(f["amount"]) for f in rows), 2),
+        "leftover_rows": rows,
+    }
+
+
+def can_nail(conn, business_day: str) -> bool:
+    """Nailability derived from the gate and the open scan -- one formula,
+    used by every endpoint, so the UI can never show a nail button that the
+    write path would reject (or vice versa).
+    """
+    if day_gate(conn, business_day)["sealed"]:
+        return False
+    return fact_repo.open_count_for_day(conn, business_day) > 0
+
+
 def close_leftovers(
     conn,
     business_day: str,
@@ -112,7 +137,7 @@ def close_leftovers(
     while known leftovers stay indefinitely ``open``.
     """
     if not facts:
-        return {"action": action, "count": 0, "target_day": None, "fact_ids": []}
+        return {"action": "none", "count": 0, "target_day": None, "fact_ids": []}
     ids = [int(f["id"]) for f in facts]
     if action == "void":
         at = datetime.now().replace(microsecond=0).isoformat()

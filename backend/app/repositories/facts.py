@@ -87,6 +87,34 @@ def void_fact(conn: sqlite3.Connection, fact_id: int, at: str) -> None:
     )
 
 
+def get_by_event(conn: sqlite3.Connection, event_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM redeem_facts WHERE event_id=? LIMIT 1",
+        (int(event_id),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def update_tag(conn: sqlite3.Connection, fact_id: int, tag: str) -> None:
+    """Move an open fact to another tag partition.
+
+    Only ``open`` facts are movable: sealed/voided facts belong to a closed
+    day and must never be re-partitioned behind the gate.
+    """
+    conn.execute(
+        "UPDATE redeem_facts SET tag=? WHERE id=? AND status='open'",
+        (tag, int(fact_id)),
+    )
+
+
+def open_count_for_day(conn: sqlite3.Connection, business_day: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) c FROM redeem_facts WHERE business_day=? AND status='open'",
+        (business_day,),
+    ).fetchone()
+    return int(row["c"])
+
+
 def leftover_facts(conn: sqlite3.Connection, business_day: str, excluded_tag: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM redeem_facts WHERE business_day=? AND status='open' AND tag<>? ORDER BY id",

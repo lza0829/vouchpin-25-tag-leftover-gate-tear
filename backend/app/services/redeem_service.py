@@ -20,15 +20,22 @@ def list_facts(business_day: str | None = None, tag: str | None = None) -> list[
 
 
 def preview(business_day: str | None = None, tag: str | None = None) -> dict[str, Any]:
+    """Single read model for the nail page.
+
+    Every field is derived from the same open-fact scan and the sealed-batch
+    gate; there is no separate materialized leftover table to drift away from
+    either of them.
+    """
     norm_tag = tag_service.normalize_tag(tag)
     conn = connect()
     try:
         day = business_day or settings_repo.get(conn, "business_day")
+        gate = tag_service.day_gate(conn, day)
         opens = fact_repo.open_facts_for_day(conn, day, tag=norm_tag)
         total = round(sum(float(f["amount"]) for f in opens), 2)
-        from app.services import tag_material
-        posted = tag_material.as_preview(conn, day)
-        gate = tag_service.day_gate(conn, day)
+        # The leftover list is exactly "open facts not in this batch's tag".
+        leftover = tag_service.leftover_view(conn, day, norm_tag)
+        nailable = tag_service.can_nail(conn, day)
         return {
             "business_day": day,
             "tag": norm_tag,
@@ -36,12 +43,13 @@ def preview(business_day: str | None = None, tag: str | None = None) -> dict[str
             "open_total": total,
             "facts": opens,
             "gate": gate,
-            "leftover_tags": posted["leftover_tags"],
-            "leftover_count": posted["leftover_count"],
-            "leftover_total": posted["leftover_total"],
-            "leftover_rows": posted["leftover_rows"],
-            "can_nail": posted["can_nail"] or not gate["sealed"],
-            "requires_leftover_action": posted["leftover_count"] > 0,
+            "leftover_tags": leftover["leftover_tags"],
+            "leftover_count": leftover["leftover_count"],
+            "leftover_total": leftover["leftover_total"],
+            "leftover_rows": leftover["leftover_rows"],
+            # One formula for every caller: closed gate or no open => cannot nail.
+            "can_nail": nailable,
+            "requires_leftover_action": leftover["leftover_count"] > 0 and not gate["sealed"],
             "tag_overview": tag_service.merged_tag_overview(conn, day),
         }
     finally:
@@ -64,6 +72,8 @@ def seal(body: dict[str, Any]) -> dict[str, Any]:
             hint = f"（tag={tag!r}）" if tag is not None else ""
             raise HTTPException(400, f"业务日 {day} 无可钉扎的 open 核销事实{hint}")
 
+        # Leftovers are computed from the very same scan, inside the same
+        # BEGIN IMMEDIATE transaction, and closed out before the gate closes.
         leftovers = tag_service.leftover_open_facts(conn, day, tag)
         if leftovers and action not in {"carry", "void"}:
             tags = sorted({str(f["tag"]) for f in leftovers})
@@ -76,6 +86,7 @@ def seal(body: dict[str, Any]) -> dict[str, Any]:
                     "allowed_leftover_action": ["carry", "void"],
                 },
             )
+        closure = tag_service.close_leftovers(conn, day, leftovers, action or "none")
 
         total = round(sum(float(f["amount"]) for f in opens), 2)
         bid = batch_repo.create_batch(
@@ -90,15 +101,17 @@ def seal(body: dict[str, Any]) -> dict[str, Any]:
             leftover_tags=sorted({str(f["tag"]) for f in leftovers}),
         )
         fact_repo.mark_batched(conn, [int(f["id"]) for f in opens], bid)
-        from app.services import tag_material
-        posted_rows = tag_material.materialize(conn, day, tag)
-        closure = {
-            "action": "posted",
-            "count": len(posted_rows),
-            "target_day": None,
-            "fact_ids": [],
-            "can_nail": True,
-        }
+
+        # Re-read through the single source of truth and assert the
+        # transaction cannot commit in a torn state: a closed gate with open
+        # facts still behind it is refused.
+        remaining = fact_repo.open_facts_for_day(conn, day)
+        if remaining:
+            raise HTTPException(
+                409,
+                f"收口后仍有 {len(remaining)} 笔 open 事实，拒绝在遗留未清时关闸",
+            )
+
         conn.commit()
         return {
             "batch_id": bid,

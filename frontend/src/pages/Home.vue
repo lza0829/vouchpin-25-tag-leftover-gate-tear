@@ -19,7 +19,7 @@ onMounted(load)
       <div class="stat"><div class="k">待钉 open</div><div class="v">{{ d.open_fact_count }}</div></div>
       <div class="stat"><div class="k">今日核销额</div><div class="v ticket">{{ d.redeem_total_today }}</div></div>
       <div class="stat"><div class="k">日闸</div><div class="v">{{ d.day_sealed ? '已关' : '未关' }}</div></div>
-      <div class="stat"><div class="k">清单可钉</div><div class="v">{{ d.leftover_posted && d.leftover_posted.can_nail ? '是' : '否' }}</div></div>
+      <div class="stat"><div class="k">清单可钉</div><div class="v">{{ d.can_nail ? '是' : '否' }}</div></div>
     </div>
     <p class="msg" v-if="d && d.day_sealed">
       日闸已由批次 #{{ d.gate_batch_id }} 关闭<template v-if="d.gate_tag !== null">（首个钉扎 tag：<span class="tag">{{ d.gate_tag || '（空）' }}</span>）</template>；

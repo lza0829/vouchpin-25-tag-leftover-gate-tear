@@ -29,8 +29,3 @@ def create_event(body: dict[str, Any]):
 @router.post("/events/{event_id}/tag")
 def retag(event_id: int, body: dict[str, Any]):
     return svc.retag(event_id, body)
-
-
-@router.post("/tags/refresh")
-def refresh_tags(body: dict[str, Any]):
-    return svc.refresh_leftover(body)
